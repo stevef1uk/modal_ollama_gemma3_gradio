@@ -1,0 +1,86 @@
+NOTE: This is program to deploy gemma3:27b on a Modal.com conatinr with an H100 GPU.
+It also deploys a Gradio UI.
+
+You have to have a Modal account (a nice container as a service system)  and then create a secret with your hugging face key. 
+Modal: https://modal.com/use-cases/language-models 
+Hugging Face: https://huggingface.co
+
+You can sign-up with both sites and do not need to register with a credit card. I added a credit card to modal as the $30 a month free credit was not enough to develop and test this code to get this LLM deployed, however, it should be plenty for anyone to now deploy this LLM and do some testing on it.
+
+Then once you have setup modal (modal setup) first try running:
+
+modal run simple1.py
+
+This should show you the location on the internet of your ISP and where the remote modal code is running.
+
+Then you can deploy the Gemma 3 27B model on a single H100 GPU (80GB VRAM) using llama.cpp with:
+
+Note: I estimate this will costs around $5 a hour to run (see: https://modal.com/pricing) , but the container goes to sleep after 5 minutes of being idle and therefore costs nothing. As the container using llama.cpp can only handle one request at a time further requests are queued. This can easily be changed by configuring the app to spin-up additional containers for new requests, however, each one will cost.
+
+Step 0:
+Define a Modal secret (see below) to store your hugging face token:
+
+Navigate to Hugging Face Tokens Page (https://huggingface.co/docs/hub/en/security-tokens)
+Click "New token"
+Choose a name for your token (e.g., my-modal-token)
+Set the role:
+✅ Read → If you just need to download models
+✅ Write → If you need to upload models
+✅ Admin → Full access (not recommended unless necessary)
+Click "Generate token" and copy it.
+
+Use this token in the modal secret called:
+
+i) hf-secret
+
+Use key: HF_TOKEN and store the Hugging Face token in the value
+
+
+Step 1: Deploy the serve container for the LLM. 
+
+First change the line:
+
+app = modal.App("gemma-api")  # Add something to make it unique to your desired prefix
+
+Then:
+
+modal deploy main.py
+
+This deploys the app but won't cause the serve container to start until you access it:
+
+The deployment will give you an end-point and a token that you then need to access the model e.g.
+
+curl -X POST "https://[your-id]--[your-app-name]--validate.modal.run/v1/completions" \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer SbRIuL3RjFM8AeK0kx0LAOS7LTPwB-t-zj3hMNc-07c" \
+     -d '{
+       "prompt": "Please tell me why the sky is blue",
+       "max_tokens": 2048,
+       "temperature": 0.7,
+       "stream": false
+     }'
+
+
+Step 2:
+
+Create a couple of secrets in modal using their GUI:
+
+i) llama_server_url
+
+Use key: LLAMA_SERVER_URL and store the above url e.g. https://stevef1uk--myid-validate.modal.run"
+
+ii) MODAL_SECRET_LLAMA_CPP_API_KEY
+
+Use key: llamakey and store the token above e.g. SbRIuL3RjFM8AeK0kx0LAOS7LTPwB-t-zj3hMNc-07c
+
+This is used to prevent unwanted access to the deployed LLM as it is publically accessible!	
+
+iii) gradio_app_access_key 
+
+Use key: MODAL_SECRET_GRADIO_APP_ACCESS_KEY and set your own access key: this will restrict access to the Gradio GUI to people who know that token and thus to the LLM that will cost money to use.
+
+Final step deploy the Gradio based GUI:
+
+modal deploy deploy_gradio.py  
+
+This will give you the URL of the GUI where you will need to enter the access key you defined earlier to query the LLM
