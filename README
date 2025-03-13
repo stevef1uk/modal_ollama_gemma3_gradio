@@ -1,5 +1,5 @@
 NOTE: This is program to deploy gemma3:27b on a Modal.com conatinr with an H100 GPU.
-It also deploys a Gradio UI.
+It also deploys a Gradio UI so you can easily access it.
 
 You have to have a Modal account (a nice container as a service system)  and then create a secret with your hugging face key. 
 Modal: https://modal.com/use-cases/language-models 
@@ -13,7 +13,7 @@ modal run simple1.py
 
 This should show you the location on the internet of your ISP and where the remote modal code is running.
 
-Then you can deploy the Gemma 3 27B model on a single H100 GPU (80GB VRAM) using llama.cpp with:
+Then you can deploy the Gemma 3 27B model on a single H100 GPU (80GB VRAM) using ollama with:
 
 Note: I estimate this will costs around $5 a hour to run (see: https://modal.com/pricing) , but the container goes to sleep after 5 minutes of being idle and therefore costs nothing. As the container using llama.cpp can only handle one request at a time further requests are queued. This can easily be changed by configuring the app to spin-up additional containers for new requests, however, each one will cost.
 

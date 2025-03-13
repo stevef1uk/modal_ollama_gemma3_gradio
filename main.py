@@ -139,7 +139,7 @@ operating_sys = "ubuntu22.04"
 tag = f"{cuda_version}-{flavor}-{operating_sys}"
 
 # Create Modal application
-app = modal.App("gemma-api-sjf321")
+app = modal.App("gemma-api")
 
 # Constants
 MINUTES = 60
