@@ -5,7 +5,7 @@ You have to have a Modal account (a nice container as a service system)  and the
 Modal: https://modal.com/use-cases/language-models 
 Hugging Face: https://huggingface.co
 
-You can sign-up with both sites and do not need to register with a credit card. I added a credit card to modal as the $30 a month free credit was not enough to develop and test this code to get this LLM deployed, however, it should be plenty for anyone to now deploy this LLM and do some testing on it.
+You can sign-up with both sites and do not need to register with a credit card. 
 
 Then once you have setup modal (modal setup) first try running:
 
