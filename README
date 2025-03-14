@@ -15,7 +15,7 @@ This should show you the location on the internet of your ISP and where the remo
 
 Then you can deploy the Gemma 3 27B model on a single H100 GPU (80GB VRAM) using ollama with:
 
-Note: I estimate this will costs around $5 a hour to run (see: https://modal.com/pricing) , but the container goes to sleep after 5 minutes of being idle and therefore costs nothing. As the container using llama.cpp can only handle one request at a time further requests are queued. This can easily be changed by configuring the app to spin-up additional containers for new requests, however, each one will cost.
+Note: The H100 costs $0.001097 / sec (see: https://modal.com/pricing) , but the container goes to sleep after 5 minutes of being idle and therefore costs nothing. As the container using llama.cpp can only handle one request at a time further requests are queued. This can easily be changed by configuring the app to spin-up additional containers for new requests, however, each one will cost.
 
 Step 0:
 Define a Modal secret (see below) to store your hugging face token:
