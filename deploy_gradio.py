@@ -1,12 +1,13 @@
-# Gradio GUI for LLaMA.cpp Server
-# This script deploys a Gradio GUI on Modal that interacts with a remote LLaMA.cpp server.
+# Gradio GUI for Ollama Server with Multiple Model Support
+# This script deploys a Gradio GUI on Modal that interacts with a remote Ollama server.
 # Author: Steven Fisher (stevef@gmail.com)
 # 
 # Description: This script sets up a Gradio interface on Modal, which communicates
-#              with a separate llama.cpp server. It requires the following secrets:
-#              - MODAL_SECRET_LLAMA_CPP_API_KEY: API key for accessing the LLaMA.cpp server.
+#              with a separate Ollama server. It requires the following secrets:
+#              - MODAL_PROXY_TOKEN_ID: Token ID for Modal proxy authentication
+#              - MODAL_PROXY_TOKEN_SECRET: Token secret for Modal proxy authentication
 #              - gradio_app_access_key: Access key for securing the Gradio app.
-#              - llama_server_url: URL of the remote LLaMA.cpp server.
+#              - llama_server_url: URL of the remote Ollama server.
 
 import modal
 import pathlib
@@ -16,16 +17,17 @@ import os
 
 GRADIO_PORT = 8000
 
-app = modal.App("gradio-app")
+app = modal.App("ollama-gradio-interface")
 
 # Define the secrets with exact names
-llm_secret = modal.Secret.from_name("MODAL_SECRET_LLAMA_CPP_API_KEY")  # This creates env var MODAL_SECRET_LLAMA_CPP_API_KEY_LLAMAKEY
+proxy_token_id = modal.Secret.from_name("MODAL_PROXY_TOKEN_ID")
+proxy_token_secret = modal.Secret.from_name("MODAL_PROXY_TOKEN_SECRET")
 gradio_access_secret = modal.Secret.from_name("gradio_app_access_key")
 server_url_secret = modal.Secret.from_name("llama_server_url")
 
 # Create the base image
 image = (modal.Image.debian_slim(python_version="3.11")
-         .pip_install("gradio", "fastapi", "uvicorn"))
+         .pip_install("gradio", "fastapi", "uvicorn", "requests"))
 
 # Add the GUI script to the image
 fname = "gui_for_llm.py"
@@ -39,9 +41,9 @@ image = image.add_local_file(str(gradio_script_local_path), "/root/gui_for_llm.p
 
 @app.function(
     image=image,
-    secrets=[llm_secret, gradio_access_secret, server_url_secret],
+    secrets=[proxy_token_id, proxy_token_secret, gradio_access_secret, server_url_secret],
     allow_concurrent_inputs=100,
-    concurrency_limit=1,  # Drives number of containers!
+    max_containers=1,  # Drives number of containers!
 )
 @modal.web_server(GRADIO_PORT, startup_timeout=60)
 def web_app():
@@ -56,4 +58,3 @@ def web_app():
 
 if __name__ == "__main__":
     modal.runner.deploy_stub(app)
-

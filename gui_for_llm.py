@@ -1,12 +1,13 @@
 """
-Gradio GUI for Ollama Gemma 3 27B Server
+Gradio GUI for Ollama Server with Multiple Model Support
 
 This script deploys a Gradio GUI on Modal that interacts with a remote Ollama server.
 Author: Steven Fisher (stevef@gmail.com)
 
 Description: This script sets up a Gradio interface on Modal, which communicates
              with a separate Ollama server. It requires the following secrets:
-             - MODAL_SECRET_LLAMA_CPP_API_KEY: API key for accessing the Ollama server.
+             - MODAL_PROXY_TOKEN_ID: Token ID for Modal proxy authentication
+             - MODAL_PROXY_TOKEN_SECRET: Token secret for Modal proxy authentication
              - gradio_app_access_key: Access key for securing the Gradio app.
              - llama_server_url: URL of the remote Ollama server.
 """
@@ -22,17 +23,63 @@ import modal
 import time
 
 # Create Modal app
-modal_app = modal.App("gemma-gradio-interface")
+modal_app = modal.App("ollama-gradio-interface")
 
-# Create Modal secret reference for server URL
+# Create Modal secret references
 server_url_secret = modal.Secret.from_name("llama_server_url")
+proxy_token_id = modal.Secret.from_name("MODAL_PROXY_TOKEN_ID")
+proxy_token_secret = modal.Secret.from_name("MODAL_PROXY_TOKEN_SECRET")
+gradio_access_secret = modal.Secret.from_name("gradio_app_access_key")
 
 # Create a persistent FastAPI app
 web_app = FastAPI()
 
-def chat_with_llm(access_key: str, message: str):
+# List of popular Ollama models
+OLLAMA_MODELS = [
+    "gemma3:27b",
+    "llama3:8b",
+    "llama3:70b",
+    "phi3:14b",
+    "mistral:7b",
+    "mixtral:8x7b",
+    "codellama:70b",
+    "llama2:70b",
+    "orca2:13b",
+    "vicuna:13b"
+]
+
+# Get token values from secrets at startup
+TOKEN_ID = None
+TOKEN_SECRET = None
+
+@web_app.on_event("startup")
+async def startup_event():
+    """Initialize token values from secrets at startup."""
+    global TOKEN_ID, TOKEN_SECRET
+    
+    # Try to get token values from environment variables
+    TOKEN_ID = os.environ.get("MODAL_SECRET_MODAL_PROXY_TOKEN_ID")
+    if not TOKEN_ID:
+        # Try alternate environment variable names
+        TOKEN_ID = os.environ.get("token_id")
+    
+    TOKEN_SECRET = os.environ.get("MODAL_SECRET_MODAL_PROXY_TOKEN_SECRET")
+    if not TOKEN_SECRET:
+        # Try alternate environment variable names
+        TOKEN_SECRET = os.environ.get("token_secret")
+    
+    print(f"Tokens initialized at startup: ID={bool(TOKEN_ID)}, Secret={bool(TOKEN_SECRET)}")
+    
+    # Print all environment variables for debugging
+    print("All environment variables:")
+    for key in sorted(os.environ.keys()):
+        print(f"  {key}")
+
+def chat_with_llm(access_key: str, model: str, message: str):
     """Chat function that uses the LLM service."""
-    print(f"Received chat request with message: {message}")
+    global TOKEN_ID, TOKEN_SECRET
+    
+    print(f"Received chat request with model: {model} and message: {message}")
     
     # Retrieve the expected access key from environment variables
     expected_access_key = os.environ.get("MODAL_SECRET_GRADIO_APP_ACCESS_KEY")
@@ -40,40 +87,61 @@ def chat_with_llm(access_key: str, message: str):
         yield "Error: Invalid access key."
         return
 
-    # Access the LLM API key and server URL
-    api_key = os.environ.get("llamakey")
+    # Access the server URL
     server_url = os.environ.get("LLAMA_SERVER_URL")
-    
-    if not api_key:
-        yield "Error: LLM API key not found."
-        return
     if not server_url:
         yield "Error: Server URL not found in environment variables"
         return
-
+    
+    # Check if tokens are available
+    if not TOKEN_ID or not TOKEN_SECRET:
+        # Try to get token values from environment variables again
+        TOKEN_ID = os.environ.get("MODAL_SECRET_MODAL_PROXY_TOKEN_ID")
+        if not TOKEN_ID:
+            TOKEN_ID = os.environ.get("token_id")
+        
+        TOKEN_SECRET = os.environ.get("MODAL_SECRET_MODAL_PROXY_TOKEN_SECRET")
+        if not TOKEN_SECRET:
+            TOKEN_SECRET = os.environ.get("token_secret")
+        
+        if not TOKEN_ID or not TOKEN_SECRET:
+            yield "Error: Modal proxy authentication tokens not available. Please check your secrets configuration."
+            return
+    
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
+        "Modal-Key": TOKEN_ID,
+        "Modal-Secret": TOKEN_SECRET
     }
+    
+    print(f"Using authentication with tokens from secrets")
     
     enhanced_prompt = f"Please provide a clear, concise answer to this question: {message}"
     
+    # For non-streaming request
     payload = {
         "prompt": enhanced_prompt,
         "temperature": 0.7,
+        "model": model,  # Use the selected model
         "stream": False
     }
 
     try:
         print("Making request to server...")
         print(f"Using server URL: {server_url}")
+        print(f"Using model: {model}")
+        
+        # First yield a message indicating the model is being loaded
+        yield f"Loading {model}... This may take a moment if the model isn't already cached."
+        
         response = requests.post(
-            f"{server_url}/v1/completions",
+            server_url,
             headers=headers,
             json=payload,
-            timeout=300
+            timeout=600  # Increased timeout for model loading
         )
         print(f"Response status code: {response.status_code}")
+        
         response.raise_for_status()
         
         try:
@@ -121,7 +189,17 @@ demo = gr.Interface(
     fn=chat_with_llm,
     inputs=[
         gr.Textbox(label="Access Key", type="password"),
-        gr.Textbox(label="Enter your message", lines=4)
+        gr.Dropdown(
+            choices=OLLAMA_MODELS,
+            value="gemma3:27b",  # Default model
+            label="Select Model",
+            info="Choose the Ollama model to use for generating responses"
+        ),
+        gr.Textbox(
+            label="Enter your message", 
+            lines=4,
+            placeholder="Type your question or prompt here..."
+        )
     ],
     outputs=gr.Textbox(
         label="Response", 
@@ -133,25 +211,44 @@ demo = gr.Interface(
         container=True,
         scale=2
     ),
-    title="Gemma 3 27B Chat Interface",
-    description="Enter the access key and your message to chat with the Gemma 3 27B model.",
+    title="Ollama LLM Chat Interface",
+    description="Enter the access key, select a model, and type your message to chat with various Ollama models.",
     live=False,
     flagging_mode="never"
 )
 
 # Mount Gradio app to FastAPI
-app = mount_gradio_app(
+gradio_app = mount_gradio_app(
     app=web_app,
     blocks=demo,
     path="/"
 )
 
 @modal_app.function(
-    secrets=[server_url_secret]
+    secrets=[
+        {"name": "MODAL_PROXY_TOKEN_ID", "mount_path": "/secrets/token_id"},
+        {"name": "MODAL_PROXY_TOKEN_SECRET", "mount_path": "/secrets/token_secret"},
+        server_url_secret,
+        gradio_access_secret
+    ]
 )
 @modal.asgi_app()
 def serve():
     """Return the persistent ASGI app"""
+    # Try to read token values from mounted secret files
+    global TOKEN_ID, TOKEN_SECRET
+    
+    try:
+        with open("/secrets/token_id", "r") as f:
+            TOKEN_ID = f.read().strip()
+        
+        with open("/secrets/token_secret", "r") as f:
+            TOKEN_SECRET = f.read().strip()
+        
+        print(f"Tokens loaded from mounted secret files: ID={bool(TOKEN_ID)}, Secret={bool(TOKEN_SECRET)}")
+    except Exception as e:
+        print(f"Error reading token files: {str(e)}")
+    
     return web_app
 
 if __name__ == "__main__":
