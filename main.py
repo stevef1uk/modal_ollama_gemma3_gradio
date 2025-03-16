@@ -335,33 +335,125 @@ def api(request_data: dict):
         # Start Ollama service if not already running
         if ollama_process is None:
             print("Starting Ollama service...")
-            ollama_process = subprocess.Popen(
-                ["ollama", "serve"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
-            
-            # Wait for service with retries
-            max_retries = 6
-            for i in range(max_retries):
+            # Add more detailed logging for the startup process
+            try:
+                # Check if Ollama is already running
                 try:
-                    health_check = requests.get("http://127.0.0.1:11434/api/tags", timeout=10)
+                    health_check = requests.get("http://127.0.0.1:11434/api/tags", timeout=5)
                     if health_check.status_code == 200:
-                        print(f"Ollama service status: {health_check.status_code}")
-                        models = health_check.json().get('models', [])
-                        print(f"Available models: {models}")
-                        
-                        # Track which models are already loaded
-                        for model in models:
-                            loaded_models.add(model.get('name'))
-                        
-                        break
-                except Exception as e:
-                    if i < max_retries - 1:
-                        print(f"Waiting for Ollama service (attempt {i+1}/{max_retries})...")
-                        time.sleep(5)
+                        print("Ollama service is already running")
+                        ollama_process = True  # Just mark as running
                     else:
-                        raise Exception(f"Failed to start Ollama service: {str(e)}")
+                        raise Exception("Unexpected status code")
+                except requests.exceptions.RequestException:
+                    # Ollama is not running, start it with more detailed output
+                    print("Ollama not running, starting service...")
+                    
+                    # First, check if the ollama binary exists and is executable
+                    if not os.path.exists("/usr/local/bin/ollama"):
+                        print("⚠️ Ollama binary not found at /usr/local/bin/ollama")
+                        # Try to find it elsewhere
+                        result = subprocess.run(["which", "ollama"], capture_output=True, text=True)
+                        if result.returncode == 0:
+                            ollama_path = result.stdout.strip()
+                            print(f"Found Ollama at: {ollama_path}")
+                        else:
+                            raise Exception("Ollama binary not found. Is it installed?")
+                    else:
+                        print("✓ Ollama binary found at /usr/local/bin/ollama")
+                    
+                    # Start Ollama with output redirection to files for debugging
+                    log_dir = "/tmp"
+                    stdout_path = f"{log_dir}/ollama_stdout.log"
+                    stderr_path = f"{log_dir}/ollama_stderr.log"
+                    
+                    print(f"Starting Ollama with logs: stdout={stdout_path}, stderr={stderr_path}")
+                    
+                    with open(stdout_path, "w") as stdout_file, open(stderr_path, "w") as stderr_file:
+                        ollama_process = subprocess.Popen(
+                            ["ollama", "serve"],
+                            stdout=stdout_file,
+                            stderr=stderr_file,
+                            text=True
+                        )
+                    
+                    # Wait for service with improved retry logic
+                    max_retries = 12  # Increase retries
+                    retry_delay = 5   # 5 seconds between retries
+                    
+                    for i in range(max_retries):
+                        try:
+                            print(f"Checking Ollama service (attempt {i+1}/{max_retries})...")
+                            health_check = requests.get("http://127.0.0.1:11434/api/tags", timeout=10)
+                            
+                            if health_check.status_code == 200:
+                                print(f"✓ Ollama service is running (status: {health_check.status_code})")
+                                models = health_check.json().get('models', [])
+                                print(f"Available models: {models}")
+                                
+                                # Track which models are already loaded
+                                for model in models:
+                                    loaded_models.add(model.get('name'))
+                                
+                                break
+                            else:
+                                print(f"⚠️ Unexpected status code: {health_check.status_code}")
+                        except Exception as e:
+                            if i < max_retries - 1:
+                                # Check if process is still running
+                                if isinstance(ollama_process, subprocess.Popen) and ollama_process.poll() is not None:
+                                    # Process has terminated
+                                    returncode = ollama_process.poll()
+                                    print(f"⚠️ Ollama process terminated with code {returncode}")
+                                    
+                                    # Read and print the error logs
+                                    try:
+                                        with open(stderr_path, "r") as f:
+                                            stderr_content = f.read()
+                                            print(f"Ollama stderr output:\n{stderr_content}")
+                                    except Exception as log_err:
+                                        print(f"Could not read stderr log: {log_err}")
+                                    
+                                    # Try to restart the process
+                                    print("Attempting to restart Ollama...")
+                                    with open(stdout_path, "w") as stdout_file, open(stderr_path, "w") as stderr_file:
+                                        ollama_process = subprocess.Popen(
+                                            ["ollama", "serve"],
+                                            stdout=stdout_file,
+                                            stderr=stderr_file,
+                                            text=True
+                                        )
+                            
+                            print(f"Waiting for Ollama service (attempt {i+1}/{max_retries})...")
+                            time.sleep(retry_delay)
+                        else:
+                            # Last attempt failed, check logs and raise detailed error
+                            if isinstance(ollama_process, subprocess.Popen):
+                                try:
+                                    with open(stderr_path, "r") as f:
+                                        stderr_content = f.read()
+                                    with open(stdout_path, "r") as f:
+                                        stdout_content = f.read()
+                                    
+                                    error_details = f"""
+Failed to start Ollama service after {max_retries} attempts.
+Error: {str(e)}
+
+STDOUT:
+{stdout_content}
+
+STDERR:
+{stderr_content}
+"""
+                                    raise Exception(error_details)
+                                except Exception as log_err:
+                                    raise Exception(f"Failed to start Ollama service: {str(e)}. Additionally, could not read logs: {str(log_err)}")
+                            else:
+                                raise Exception(f"Failed to start Ollama service: {str(e)}")
+            
+            except Exception as e:
+                print(f"Error starting Ollama service: {str(e)}")
+                raise
         
         # Ensure requested model is loaded
         if model_name not in loaded_models:
