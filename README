@@ -22,7 +22,7 @@ You can sign-up with both sites and do not need to register with a credit card.
 2. Create a Hugging Face account at [https://huggingface.co](https://huggingface.co)
 3. Install the Modal CLI and set it up:
    ```
-   pip install modal
+   pip install modal tabulate
    modal setup
    ```
 
