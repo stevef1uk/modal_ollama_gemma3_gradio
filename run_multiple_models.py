@@ -53,7 +53,7 @@ if not TOKEN_ID or not TOKEN_SECRET:
     exit(1)
 
 # Models to test - can be customized as needed
-models = ["gemma3:27b", "llama3:8b", "phi3:14b", "mistral:7b"]
+models = ["gemma3:27b", "llama3:8b", "phi3:14b", "mistral:7b", "DeepSeek-R1:14b", "llama3.3"]
 
 # Test prompts - add or modify as needed for your evaluation
 prompts = [
