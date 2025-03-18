@@ -1,4 +1,4 @@
-# This file was evolved from the on eprovided in: https://github.com/MinhNgyuen/llm-benchmark
+# This file was evolved from the one provided in: https://github.com/MinhNgyuen/llm-benchmark
 import argparse
 from typing import List
 import requests
