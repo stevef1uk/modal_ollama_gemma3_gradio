@@ -428,316 +428,141 @@ def get_idle_timeout():
     print(f"⏱️ Idle timeout: {idle_timeout} seconds ({idle_timeout/60:.1f} minutes)")
     return idle_timeout
 
-# Update the verify_gpu_memory function
 def verify_gpu_memory():
-    """Verify GPU memory allocation with improved efficiency."""
+    """Simple GPU memory check."""
     try:
-        # Import required modules inside the function
-        import torch
-        import numpy as np
         import pynvml
-        
-        # Initialize NVML
         pynvml.nvmlInit()
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        
-        # Check GPU memory before loading
         info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         gpu_used = info.used // 1024 // 1024  # Convert to MB
         gpu_total = info.total // 1024 // 1024
-        print(f"Initial GPU Memory: {gpu_used}MB/{gpu_total}MB ({gpu_used/gpu_total*100:.1f}%)")
-        
-        # Check if CUDA is available
-        if not torch.cuda.is_available():
-            raise Exception("CUDA is not available")
-        
-        # Force GPU memory allocation with a single large tensor
-        print("Forcing GPU memory allocation...")
-        try:
-            # Allocate a single large tensor (4GB)
-            tensor = torch.zeros((1024, 1024, 1024), device='cuda')
-            torch.cuda.synchronize()
-            
-            # Check memory after allocation
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            gpu_used = info.used // 1024 // 1024
-            print(f"GPU Memory after allocation: {gpu_used}MB/{gpu_total}MB ({gpu_used/gpu_total*100:.1f}%)")
-            
-            # Keep the tensor allocated
-            print("Keeping tensor allocated for model loading...")
-            return True
-            
-        except Exception as e:
-            print(f"Warning: Could not allocate GPU tensor: {str(e)}")
-            return False
-            
+        print(f"GPU Memory: {gpu_used}MB/{gpu_total}MB ({gpu_used/gpu_total*100:.1f}%)")
+        return True
     except Exception as e:
-        print(f"Failed to verify GPU memory: {str(e)}")
+        print(f"Warning: Could not check GPU memory: {str(e)}")
         return False
+    finally:
+        try:
+            pynvml.nvmlShutdown()
+        except:
+            pass
 
-# Update the monitor_memory function
-def monitor_memory():
-    """Monitor GPU memory usage with reduced warning messages."""
+def wait_for_model_ready(model_name, max_attempts=3, initial_wait=5):
+    """Wait for model to be ready."""
     try:
-        # Import required modules inside the function
-        import pynvml
-        import torch
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-    except Exception as e:
-        print(f"Failed to initialize NVML: {str(e)}")
-        return
-        
-    last_warning_time = 0
-    warning_cooldown = 30  # Only show warnings every 30 seconds
-    last_memory_usage = 0
-    memory_threshold = 0.1  # 10% change threshold
-    
-    while True:
-        try:
-            # Check GPU memory using NVML
-            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            gpu_used = info.used // 1024 // 1024
-            gpu_total = info.total // 1024 // 1024
-            gpu_percent = (gpu_used / gpu_total) * 100
-            
-            # Get PyTorch memory stats
-            torch_memory = torch.cuda.memory_allocated() // 1024 // 1024
-            torch_cached = torch.cuda.memory_reserved() // 1024 // 1024
-            
-            # Only print if memory usage changes significantly
-            current_time = time.time()
-            memory_change = abs(gpu_used - last_memory_usage) / gpu_total
-            
-            if current_time - last_warning_time >= warning_cooldown and memory_change > memory_threshold:
-                if gpu_percent < 20:  # Less than 20% usage
-                    print(f"\nℹ️ GPU Memory: {gpu_used}MB/{gpu_total}MB ({gpu_percent:.1f}%)", flush=True)
-                    last_warning_time = current_time
-                elif gpu_percent > 90:  # High memory usage
-                    print(f"\n⚠️ High GPU memory usage: {gpu_percent:.1f}%", flush=True)
-                    last_warning_time = current_time
-                
-                last_memory_usage = gpu_used
-            
-            time.sleep(5)  # Check every 5 seconds
-            
-        except Exception as e:
-            print(f"Memory monitoring error: {str(e)}")
-            time.sleep(5)
-            continue
-
-def wait_for_model_ready(model_name, max_attempts=6, initial_wait=10):
-    """Wait for model to be ready with progressive wait periods."""
-    for attempt in range(max_attempts):
-        try:
-            # Progressive wait time (10s, 20s, 30s, 40s, 50s, 60s)
+        for attempt in range(max_attempts):
             wait_time = initial_wait * (attempt + 1)
-            print(f"Waiting for model to be ready (attempt {attempt + 1}/{max_attempts}, {wait_time}s)...", flush=True)
-            time.sleep(wait_time)
+            print(f"Checking model readiness (attempt {attempt + 1}/{max_attempts}, {wait_time}s)...", flush=True)
             
-            # Try a minimal inference
-            response = requests.post(
-                "http://127.0.0.1:11434/api/generate",
-                json={
-                    "model": model_name,
-                    "prompt": "test",
-                    "stream": False,
-                    "options": {
-                        "num_ctx": 64,      # Minimal context
-                        "num_batch": 64,    # Minimal batch
-                        "batch_size": 64,   # Minimal batch
-                        "num_gpu": 1,
-                        "num_thread": 1,
-                        "gpu_layers": -1
-                    }
-                },
-                timeout=wait_time
-            )
-            
-            if response.status_code == 200:
-                print(f"✓ Model {model_name} is ready after {wait_time}s", flush=True)
-                return True
-                
-        except requests.exceptions.Timeout:
-            print(f"⚠️ Model not ready after {wait_time}s, waiting longer...", flush=True)
-            continue
-        except Exception as e:
-            print(f"⚠️ Error checking model readiness: {str(e)}", flush=True)
-            continue
-            
-    print("⚠️ Model failed to become ready after all attempts", flush=True)
-    return False
-
-def force_model_load(model_name):
-    """Force model into GPU memory with improved error handling and persistence."""
-    try:
-        print(f"\nForcing model {model_name} into GPU memory...")
-        
-        # First check if model is already loaded
-        if is_model_loaded_in_gpu(model_name):
-            print("✓ Model already loaded in GPU memory")
-            return True
-            
-        # Force model load with optimized settings
-        print("Starting model load with optimized settings...")
-        
-        # Allocate GPU memory more efficiently
-        import torch
-        try:
-            # Allocate a single large tensor to reserve GPU memory
-            tensor = torch.zeros((1024, 1024, 1024), device='cuda')  # 4GB tensor
-            torch.cuda.synchronize()
-        except Exception as e:
-            print(f"Warning: Could not allocate GPU tensor: {str(e)}")
-        
-        # Try direct model load with optimized settings
-        print("Attempting direct model load with optimized settings...")
-        try:
-            response = requests.post(
-                "http://127.0.0.1:11434/api/generate",
-                json={
-                    "model": model_name,
-                    "prompt": "test",
-                    "stream": False,
-                    "options": {
-                        "num_gpu": 1,        # Single GPU
-                        "num_thread": 1,     # Minimize CPU threads
-                        "gpu_layers": -1,    # Use all GPU layers
-                        "batch_size": 512,   # Optimized batch size
-                        "num_ctx": 512,      # Optimized context window
-                        "num_batch": 512,    # Optimized batch size
-                        "quantization": "q4_0",  # Use 4-bit quantization
-                        "num_gqa": 1,        # Group query attention
-                        "num_keep": 0,       # Don't keep tokens
-                        "seed": -1,          # Random seed
-                        "tfs_z": 1,          # Tail free sampling
-                        "typical_p": 1,      # Typical sampling
-                        "repeat_last_n": 64, # Repeat context
-                        "repeat_penalty": 1.1,# Repeat penalty
-                        "presence_penalty": 0,# No presence penalty
-                        "frequency_penalty": 0,# No frequency penalty
-                        "mirostat": 0,       # Disable mirostat
-                        "mirostat_tau": 5,   # Default mirostat tau
-                        "mirostat_eta": 0.1, # Default mirostat eta
-                        "rope_scaling": None # Disable rope scaling
-                    }
-                },
-                timeout=180  # 3 minute timeout
-            )
-            
-            if response.status_code == 200:
-                print("✓ Model loaded successfully with optimized settings")
-                # Save the successful state
-                model_gpu_states[model_name] = {
-                    "num_gpu": 1,
-                    "num_thread": 1,
-                    "gpu_layers": -1,
-                    "batch_size": 512,
-                    "num_ctx": 512,
-                    "num_batch": 512,
-                    "quantization": "q4_0"
-                }
-                loaded_models.add(model_name)
-                
-                # Wait for model to be ready with progressive wait
-                if wait_for_model_ready(model_name):
-                    print("✓ Model is fully ready for inference", flush=True)
-                    return True
-                else:
-                    print("⚠️ Model loaded but failed to become ready", flush=True)
-                    return False
-                
-            else:
-                print(f"⚠️ Direct load failed with status {response.status_code}")
-        except requests.exceptions.Timeout:
-            print("⚠️ Direct load timed out, trying fallback method")
-        except Exception as e:
-            print(f"⚠️ Direct load failed: {str(e)}")
-        
-        # If direct load fails, try progressive loading with shorter timeouts
-        print("Starting progressive model load...")
-        batch_sizes = [256, 512]  # Reduced number of attempts
-        
-        for batch_size in batch_sizes:
             try:
-                print(f"Trying batch size: {batch_size}")
-                model_options = {
-                    "num_gpu": 1,           # Single GPU
-                    "num_thread": 1,        # Minimize CPU threads
-                    "gpu_layers": -1,       # Use all GPU layers
-                    "batch_size": batch_size,
-                    "num_ctx": batch_size,
-                    "num_batch": batch_size,
-                    "quantization": "q4_0",  # Use 4-bit quantization
-                    "num_gqa": 1,           # Group query attention
-                    "num_keep": 0,          # Don't keep tokens
-                    "seed": -1,             # Random seed
-                    "tfs_z": 1,             # Tail free sampling
-                    "typical_p": 1,         # Typical sampling
-                    "repeat_last_n": 64,    # Repeat context
-                    "repeat_penalty": 1.1,   # Repeat penalty
-                    "presence_penalty": 0,   # No presence penalty
-                    "frequency_penalty": 0,  # No frequency penalty
-                    "mirostat": 0,          # Disable mirostat
-                    "mirostat_tau": 5,      # Default mirostat tau
-                    "mirostat_eta": 0.1,    # Default mirostat eta
-                    "rope_scaling": None    # Disable rope scaling
-                }
-                
-                # Try to load with current batch size
                 response = requests.post(
-                    "http://127.0.0.1:11434/api/generate",
+                    "http://127.0.0.1:11434/api/chat",
                     json={
                         "model": model_name,
-                        "prompt": "test",
+                        "messages": [{"role": "user", "content": "test"}],
                         "stream": False,
-                        "options": model_options
+                        "options": {
+                            "num_ctx": 128,
+                            "num_batch": 128,
+                            "batch_size": 128
+                        }
                     },
-                    timeout=180  # 3 minute timeout
+                    timeout=wait_time
                 )
                 
                 if response.status_code == 200:
-                    print(f"✓ Model loaded successfully with batch size {batch_size}")
-                    # Save the successful state
-                    model_gpu_states[model_name] = model_options
-                    loaded_models.add(model_name)
-                    
-                    # Wait for model to be ready with progressive wait
-                    if wait_for_model_ready(model_name):
-                        print("✓ Model is fully ready for inference", flush=True)
+                    # Verify the response is valid
+                    result = response.json()
+                    if result.get("message", {}).get("content"):
+                        print(f"✓ Model {model_name} is ready after {wait_time}s")
                         return True
                     else:
-                        print("⚠️ Model loaded but failed to become ready", flush=True)
-                        return False
-                        
-                else:
-                    print(f"⚠️ Model load returned status {response.status_code} with batch size {batch_size}")
-                    time.sleep(2)  # Short delay between attempts
+                        print(f"⚠️ Model response invalid, retrying...", flush=True)
+                        continue
+                    
             except requests.exceptions.Timeout:
-                print(f"⚠️ Model load timed out with batch size {batch_size}, trying next size")
-                time.sleep(2)
+                print(f"⚠️ Model not ready after {wait_time}s, retrying...", flush=True)
+                continue
+            except requests.exceptions.ConnectionError:
+                print(f"⚠️ Connection error, retrying...", flush=True)
+                time.sleep(1)
                 continue
             except Exception as e:
-                print(f"⚠️ Error with batch size {batch_size}: {str(e)}")
-                time.sleep(2)
+                print(f"⚠️ Error checking model readiness: {str(e)}", flush=True)
                 continue
+                
+        print("⚠️ Model failed to become ready after all attempts", flush=True)
+        return False
         
-        print("⚠️ All loading attempts failed")
-        return False
-            
-    except requests.exceptions.Timeout:
-        print("⚠️ Model load timed out, but may still be usable")
-        return True
     except Exception as e:
-        print(f"⚠️ Error forcing model load: {str(e)}")
+        print(f"⚠️ Error in model readiness check: {str(e)}", flush=True)
         return False
-    finally:
-        # Clean up tensors
+
+def force_model_load(model_name):
+    """Force model into GPU memory using Ollama's direct loading."""
+    try:
+        print(f"\nLoading model {model_name}...")
+        
+        # Simple GPU memory check
+        verify_gpu_memory()
+        
+        # Use Ollama's direct model loading
         try:
-            del tensor
-            torch.cuda.empty_cache()
-        except:
-            pass
+            response = requests.post(
+                "http://127.0.0.1:11434/api/chat",
+                json={
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "test"}],
+                    "stream": False
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                print("✓ Model loaded successfully")
+                loaded_models.add(model_name)
+                return True
+            else:
+                print(f"⚠️ Load failed with status {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            print("⚠️ Load timed out")
+            return False
+        except requests.exceptions.ConnectionError:
+            print("⚠️ Connection error during load")
+            return False
+        except Exception as e:
+            print(f"⚠️ Load failed: {str(e)}")
+            return False
+            
+    except Exception as e:
+        print(f"⚠️ Error loading model: {str(e)}")
+        return False
+
+def check_model_status(model_name, timeout=30):
+    """Check if model is ready for inference."""
+    try:
+        # Simple check if model is responding
+        response = requests.post(
+            "http://127.0.0.1:11434/api/chat",
+            json={
+                "model": model_name,
+                "messages": [{"role": "user", "content": "test"}],
+                "stream": False
+            },
+            timeout=timeout
+        )
+        if response.status_code == 200:
+            print(f"✓ Model {model_name} is ready")
+            return True
+        else:
+            print(f"⚠️ Model {model_name} not responding")
+            return False
+    except Exception as e:
+        print(f"⚠️ Error checking model status: {str(e)}")
+        return False
 
 # Add this function to check Ollama service health
 def check_ollama_health():
@@ -984,48 +809,6 @@ def is_model_loaded_in_gpu(model_name):
         print(f"⚠️ Error checking GPU memory state: {str(e)}", flush=True)
         return False
 
-def check_model_status(model_name, timeout=30):
-    """Check if model is ready for inference with increased timeout."""
-    try:
-        # First check if model is in our tracking sets
-        if model_name in loaded_models and model_name in model_gpu_states:
-            # Verify model is responding with increased timeout
-            response = requests.post(
-                "http://127.0.0.1:11434/api/generate",
-                json={
-                    "model": model_name,
-                    "prompt": "test",
-                    "stream": False,
-                    "options": {
-                        "num_ctx": 128,
-                        "num_batch": 128,
-                        "batch_size": 128,
-                        "num_gpu": 1,
-                        "num_thread": 1,
-                        "gpu_layers": -1
-                    }
-                },
-                timeout=timeout
-            )
-            if response.status_code == 200:
-                print(f"✓ Model {model_name} verified and ready", flush=True)
-                return True
-            else:
-                print(f"⚠️ Model {model_name} not responding", flush=True)
-                # Clear tracking state
-                if model_name in model_gpu_states:
-                    del model_gpu_states[model_name]
-                if model_name in loaded_models:
-                    loaded_models.remove(model_name)
-                return False
-        return False
-    except requests.exceptions.Timeout:
-        print(f"⚠️ Model status check timed out after {timeout} seconds, model may still be loading", flush=True)
-        return False
-    except Exception as e:
-        print(f"⚠️ Error checking model status: {str(e)}", flush=True)
-        return False
-
 @app.function(
     image=base_image,
     gpu=get_gpu_config(),
@@ -1038,29 +821,9 @@ def check_model_status(model_name, timeout=30):
 def api(request_data: dict):
     """
     API endpoint that serves LLM inference requests through Ollama.
-    
-    This function:
-    1. Maintains a persistent Ollama service between requests
-    2. Tracks which models are already loaded to avoid redundant loading
-    3. Dynamically loads requested models if they're not already available
-    4. Processes inference requests with configurable parameters
-    
-    Args:
-        request_data (dict): Request data containing:
-            - prompt (str): The text prompt to send to the model
-            - temperature (float, optional): Sampling temperature (default: 0.7)
-            - model (str, optional): Model name to use (default: from environment)
-    
-    Returns:
-        dict: Response containing:
-            - model (str): The model used for inference
-            - created (int): Unix timestamp of when the response was created
-            - response (str): The model's response text
-            - done (bool): Whether the generation is complete
-            - error (str, optional): Error message if something went wrong
     """
     # Global variables to persist across requests within the same container
-    global ollama_process, loaded_models, model_gpu_states
+    global ollama_process, loaded_models
     
     try:
         # Extract data from the request
@@ -1104,10 +867,10 @@ def api(request_data: dict):
         
         # Ensure requested model is loaded
         if model_name not in loaded_models or not check_model_status(model_name):
-            print(f"Checking model {model_name}...", flush=True)
+            print(f"Loading model {model_name}...", flush=True)
             try:
-                # First verify Ollama is ready and fully initialized
-                for _ in range(3):  # Try up to 3 times
+                # First verify Ollama is ready
+                for _ in range(3):
                     try:
                         health_check = requests.get("http://127.0.0.1:11434/api/tags", timeout=10)
                         if health_check.status_code == 200:
@@ -1129,16 +892,14 @@ def api(request_data: dict):
                     os.environ["CUDA_VISIBLE_DEVICES"] = ""
                     
                     try:
-                        # Use subprocess.run with timeout
                         result = subprocess.run(
                             ["ollama", "pull", model_name],
                             capture_output=True,
                             text=True,
-                            timeout=1800,  # 30 minute timeout
+                            timeout=1800,
                             env=os.environ.copy()
                         )
                         
-                        # Print output in real-time
                         if result.stdout:
                             print(result.stdout, flush=True)
                         if result.stderr:
@@ -1147,68 +908,23 @@ def api(request_data: dict):
                         if result.returncode != 0:
                             raise Exception(f"Model pull failed with return code {result.returncode}")
                         
-                        # Verify model was pulled successfully
                         if check_model_exists(model_name):
                             print(f"✓ Model {model_name} pulled successfully", flush=True)
-                            # Only sync once after successful pull
                             sync_files()
                         else:
                             raise Exception(f"Model {model_name} not found after pull")
                             
                     finally:
-                        # Restore GPU access
                         os.environ["CUDA_VISIBLE_DEVICES"] = original_cuda_devices
+
+                # Load model into GPU memory
+                if force_model_load(model_name):
+                    print("✓ Model loaded successfully", flush=True)
+                else:
+                    raise Exception("Failed to load model")
+                    
             except Exception as e:
                 print(f"Error with model {model_name}: {str(e)}", flush=True)
-                raise
-
-            # Load model into GPU memory
-            print("Loading model into GPU memory...", flush=True)
-            try:
-                # Verify GPU memory allocation
-                if not verify_gpu_memory():
-                    raise Exception("Failed to allocate GPU memory")
-                
-                print("Performing model load...", flush=True)
-                
-                # Start memory monitoring thread
-                memory_thread = threading.Thread(target=monitor_memory, daemon=True)
-                memory_thread.start()
-                
-                try:
-                    # Force model load with retries
-                    max_retries = 3
-                    for attempt in range(max_retries):
-                        print(f"\nAttempt {attempt + 1}/{max_retries} to load model...", flush=True)
-                        if force_model_load(model_name):
-                            print("✓ Model loaded successfully", flush=True)
-                            # Verify model is ready
-                            if check_model_status(model_name):
-                                print("✓ Model verified and ready for inference", flush=True)
-                                break
-                            else:
-                                print("⚠️ Model loaded but not responding, retrying...", flush=True)
-                                time.sleep(5)
-                        elif attempt < max_retries - 1:
-                            print("⚠️ Model load failed, retrying...", flush=True)
-                            time.sleep(5)
-                        else:
-                            print("⚠️ Model load failed after all attempts", flush=True)
-                    
-                    # Give it a moment to stabilize
-                    time.sleep(5)
-                    
-                except requests.exceptions.Timeout:
-                    print("\n⚠️ Preload timed out, but model may still be usable. Continuing...", flush=True)
-                    time.sleep(5)
-                except Exception as e:
-                    print(f"\n⚠️ Preload failed: {str(e)}, but model may still be usable. Continuing...", flush=True)
-                    time.sleep(5)
-                finally:
-                    # Stop the memory monitoring thread
-                    memory_thread.join(timeout=1)
-            except Exception as e:
-                print(f"Error loading model into GPU: {str(e)}", flush=True)
                 raise
         else:
             print(f"Model {model_name} is already loaded and ready", flush=True)
@@ -1216,11 +932,6 @@ def api(request_data: dict):
         # Call Ollama API for inference
         print(f"Sending request to Ollama with model: {model_name}")
         try:
-            # Verify model is ready one last time
-            if not check_model_status(model_name):
-                raise Exception("Model not ready for inference")
-            
-            print("Starting inference...", flush=True)
             response = requests.post(
                 "http://127.0.0.1:11434/api/chat",
                 json={
@@ -1230,26 +941,7 @@ def api(request_data: dict):
                     "options": {
                         "temperature": temperature,
                         "top_p": 0.9,
-                        "top_k": 40,
-                        "num_gpu": 1,        # Use single GPU
-                        "num_thread": 1,     # Minimize CPU threads
-                        "batch_size": 512,   # Optimize batch size
-                        "gpu_layers": -1,    # Use all GPU layers
-                        "num_ctx": 4096,     # Context window
-                        "num_batch": 512,    # Batch size
-                        "num_gqa": 1,        # Group query attention
-                        "num_keep": 0,       # Don't keep tokens
-                        "seed": -1,          # Random seed
-                        "tfs_z": 1,          # Tail free sampling
-                        "typical_p": 1,      # Typical sampling
-                        "repeat_last_n": 64, # Repeat context
-                        "repeat_penalty": 1.1,# Repeat penalty
-                        "presence_penalty": 0,# No presence penalty
-                        "frequency_penalty": 0,# No frequency penalty
-                        "mirostat": 0,       # Disable mirostat
-                        "mirostat_tau": 5,   # Default mirostat tau
-                        "mirostat_eta": 0.1, # Default mirostat eta
-                        "rope_scaling": None # Disable rope scaling
+                        "top_k": 40
                     }
                 },
                 timeout=1800
@@ -1258,7 +950,6 @@ def api(request_data: dict):
             response.raise_for_status()
             result = response.json()
             
-            # Format and return the response
             return {
                 "model": model_name,
                 "created": int(time.time()),
@@ -1272,7 +963,6 @@ def api(request_data: dict):
             print(f"Error during inference: {str(e)}", flush=True)
             raise
     except Exception as e:
-        # Comprehensive error handling
         import traceback
         print(f"Error: {str(e)}")
         print(traceback.format_exc())
