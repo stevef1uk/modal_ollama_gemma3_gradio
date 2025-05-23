@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 # Set the Modal URL and authentication
-MODAL_URL = "https://[your-id]--ollama-api-api.modal.run/"
+MODAL_URL = "https://stevef1uk--ollama-api-api.modal.run/"
 TOKEN_ID = os.environ.get("TOKEN_ID", "")  # Get from environment variable
 TOKEN_SECRET = os.environ.get("TOKEN_SECRET", "")  # Get from environment variable
 
