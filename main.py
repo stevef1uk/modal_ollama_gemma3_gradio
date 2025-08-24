@@ -157,11 +157,14 @@ tag = f"{cuda_version}-{flavor}-{operating_sys}"
 # Create Modal application
 app = modal.App("ollama-api")
 
+# Add a version identifier to force container recreation
+CONTAINER_VERSION = "v2.0"  # Increment this when you want to force recreation
+
 # Time constants
 MINUTES = 60
 INFERENCE_TIMEOUT = 15 * MINUTES
 MERGE_TIMEOUT = 60 * MINUTES  # Increase to 1 hour to be safe
-DEFAULT_IDLE_TIMEOUT = 5 * MINUTES  # 5 minutes (default container idle timeout)
+DEFAULT_IDLE_TIMEOUT = 60  # 60 seconds (1 minute container idle timeout)
 
 # File paths
 MODELS_DIR = "/gemma"
@@ -297,7 +300,7 @@ base_image = (
         "dpkg -i cuda-keyring.deb",
         "apt-get update",
         "apt-get install -y cuda-toolkit-12-4",
-        # Install Ollama
+        # Install latest Ollama (this will force recreation)
         "curl -fsSL https://ollama.ai/install.sh | sh",
         "chmod +x /usr/local/bin/ollama",
         # Create initial Ollama directory
@@ -308,7 +311,8 @@ base_image = (
         "nvcc --version || echo 'CUDA toolkit not found'",
         "python --version || echo 'Python not found'",
         "which python || echo 'Python not in PATH'",
-        "which pip || echo 'Pip not in PATH'"
+        "which pip || echo 'Pip not in PATH'",
+        "ollama --version || echo 'Ollama not found'"
     ])
     .pip_install(
         "requests",
@@ -815,7 +819,9 @@ def is_model_loaded_in_gpu(model_name):
     volumes={OLLAMA_DATA_DIR: model_cache},
     scaledown_window=get_idle_timeout(),
     timeout=1800,
-    max_containers=get_max_containers()
+    max_containers=get_max_containers(),
+    enable_memory_snapshot=True,
+    experimental_options={"enable_gpu_snapshot": True}
 )
 @modal.fastapi_endpoint(method="POST", requires_proxy_auth=True)
 def api(request_data: dict):
@@ -830,6 +836,15 @@ def api(request_data: dict):
         prompt = request_data.get("prompt", "Hello")
         temperature = request_data.get("temperature", 0.7)
         model_name = request_data.get("model", MODEL_NAME)
+        
+        # Debug: Show memory snapshot configuration
+        print(f"🔍 Memory Snapshot Configuration:")
+        print(f"  enable_memory_snapshot: True")
+        print(f"  enable_gpu_snapshot: True")
+        print(f"  MODAL_ENVIRONMENT: {os.environ.get('MODAL_ENVIRONMENT', 'Not set')}")
+        print(f"  Container will scale down after: {get_idle_timeout()} seconds")
+        print(f"  Note: Memory snapshots are only created for deployed apps (modal deploy)")
+        print(f"  Local development will not show snapshot creation")
         
         print(f"Received request with prompt: {prompt}")
         print(f"Using model: {model_name}")
