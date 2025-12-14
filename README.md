@@ -1,6 +1,6 @@
 # Ollama Server with Multiple LLM Support on Modal
 
-This project deploys a high-performance Ollama server on Modal.com with support for multiple language models, including Gemma 3 27B, Llama 3, Phi 3, and more. It also includes a Gradio UI for easy interaction with the models.
+This project deploys a high-performance Ollama server on Modal.com with support for multiple language models, including 4, Llama Gemma 3 27B, Llama 3, Phi 3, and more. It also includes a Gradio UI for easy interaction with the models.
 
 ## Overview
 
@@ -162,6 +162,7 @@ These options can be set via environment variables or command-line arguments whe
 ## Available Models
 
 The system supports multiple Ollama models, including:
+- llama4
 - gemma3:27b
 - llama3:8b
 - llama3:70b

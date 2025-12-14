@@ -38,7 +38,7 @@ import os
 from tabulate import tabulate
 
 # API Configuration
-API_URL = "https://stevef1uk--ollama-api-api.modal.run/"
+API_URL = "https://[your-id]--ollama-api-api.modal.run/"
 
 # Get authentication tokens from environment variables
 TOKEN_ID = os.environ.get("TOKEN_ID")

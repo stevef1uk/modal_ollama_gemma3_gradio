@@ -302,6 +302,7 @@ base_image = (
         "apt-get install -y cuda-toolkit-12-4",
         # Revert to using the official Ollama install script
         "curl -fsSL https://ollama.ai/install.sh | sh",
+        "chmod +x /usr/local/bin/ollama",
         # Ensure ollama is in PATH for subsequent commands
         "export PATH=/usr/local/bin:$PATH",
         # Add a unique string to force rebuild
