@@ -189,3 +189,55 @@ The system supports multiple Ollama models, including:
 5. The API will wake up and start serving requests again when a request comes in
 6. Container scaling is limited to control costs (default: max 2 containers)
 7. As the container using Ollama can handle multiple requests at a time, additional requests may be queued if the maximum number of containers is reached
+
+## Token-level log-probs, NLL and Perplexity (optional)
+
+This deployment can optionally compute exact token-level log-probabilities, negative log-likelihood (NLL), and perplexity using Hugging Face Transformers locally (best-effort) before falling back to Ollama.
+
+How it works
+- If the request JSON contains `"logprobs": true` the API will try to load a Transformers model/tokenizer and compute token log-probs for the prompt.
+- Use the `"hf_model"` field to specify a Hugging Face model id (e.g. `"gpt2"`), or an absolute local path inside the container where model files are stored.
+- The server caches downloaded HF files under `/ollama_data/model_cache` so subsequent requests reuse files instead of redownloading.
+- The handler tries to load quantized 4-bit weights first (bitsandbytes), then falls back to float/bfloat flows if needed.
+
+Example curl (logprobs with a public HF model):
+
+```bash
+curl -X POST "https://[username]--ollama-api-api.modal.run/" \
+  -H "Content-Type: application/json" \
+  -H "Modal-Key: $TOKEN_ID" \
+  -H "Modal-Secret: $TOKEN_SECRET" \
+  -d '{"prompt":"What is the capital of France?","temperature":0.0,"model":"gpt-oss:20b","hf_model":"gpt2","logprobs":true}'
+```
+
+Example curl (use local model folder inside Modal volume):
+
+```bash
+curl -X POST "https://[username]--ollama-api-api.modal.run/" \
+  -H "Content-Type: application/json" \
+  -H "Modal-Key: $TOKEN_ID" \
+  -H "Modal-Secret: $TOKEN_SECRET" \
+  -d '{"prompt":"What is the capital of France?","temperature":0.0,"model":"gpt-oss:20b","hf_model":"/ollama_data/llm_weights/models--openai--gpt-oss-20b","logprobs":true}'
+```
+
+Response (on success, local logprob computation):
+
+```json
+{
+  "model": "gpt-oss:20b",
+  "created": 1700000000,
+  "logprobs": [-1.38, -0.35, ...],
+  "nll": 8.89,
+  "tokens": 6,
+  "perplexity": 4.40,
+  "done": true
+}
+```
+
+Notes and cautions
+- Large models (multi-billion parameters) may not fit fully on GPU when dequantized. The handler prefers 4-bit loading via bitsandbytes; keep quantized weights or use local quantized folders when possible.
+- If MXFP4 kernels are required for a quantization format, Triton (>=3.4) may be necessary — installing Triton must match the container CUDA/toolkit and can be fragile.
+- The image sets PyTorch allocator tuning (PYTORCH_CUDA_ALLOC_CONF and PYTORCH_ALLOC_CONF) to reduce fragmentation; you can adjust these in `main.py` if needed.
+- If a requested `hf_model` is private, provide a Hugging Face token as a Modal secret (see HF_TOKEN in this README).
+
+If you want automated 4-bit/quantization mapping, a Triton install, or a debug endpoint that lists cached model folders, open an issue or request and I can patch the repo.

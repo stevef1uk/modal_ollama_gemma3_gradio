@@ -324,6 +324,9 @@ base_image = (
         "fastapi[standard]",
         "uvicorn",
         "torch",
+        "transformers",
+        "accelerate",
+        "bitsandbytes",
         "numpy",
         "nvidia-ml-py3"  # For better GPU monitoring
     )
@@ -373,10 +376,14 @@ base_image = (
         "CUDA_DEVICE_ORDER": "PCI_BUS_ID",  # Order devices by PCI bus ID
         "CUDA_VISIBLE_DEVICES": "0",      # Use single GPU
         # PyTorch specific settings
-        "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:512",  # Limit split size
-        "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8",  # Aggressive GC
-        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",  # Allow expansion
-        "PYTORCH_CUDA_ALLOC_CONF": "roundup_power2_divisions:4"  # Round up allocations
+        # PyTorch CUDA allocation tuning (single combined setting)
+        # - max_split_size_mb: limit fragmentation
+        # - expandable_segments:True: allow expandable allocation segments to reduce OOMs
+        # - roundup_power2_divisions:4: reduce fragmentation rounding
+        # Adjust as needed for your workload/GPU.
+        "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128,expandable_segments:True,roundup_power2_divisions:4",
+        # New unified PyTorch allocator config (replacement for deprecated CUDA var)
+        "PYTORCH_ALLOC_CONF": "max_split_size_mb:128,expandable_segments:True,roundup_power2_divisions:4"
     })
 )
 
@@ -946,6 +953,153 @@ def api(request_data: dict):
         else:
             print(f"Model {model_name} is already loaded and ready", flush=True)
         
+        # If caller asked for token log-probs, compute them directly (exact token-level)
+        if request_data.get("logprobs", False):
+            try:
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+                import torch, math
+                text = prompt
+                # Determine HF-compatible model id / path to use with Transformers.
+                # Prefer explicit 'hf_model' in the request; otherwise try a best-effort conversion.
+                hf_model_name = request_data.get("hf_model") or model_name.replace(":", "-")
+                # If the user provided a relative repo-like name that exists under our MODEL_CACHE_DIR,
+                # prefer that local folder to avoid redownloading.
+                hf_local_path = hf_model_name
+                if not os.path.isabs(hf_model_name):
+                    candidate = os.path.join(MODEL_CACHE_DIR, hf_model_name)
+                    if os.path.isdir(candidate):
+                        hf_local_path = candidate
+
+                # Try loading in 4-bit first (bitsandbytes) to save memory. If that fails, fall back to full/half/bfloat flows.
+                loaded_in_4bit = False
+                try:
+                    if os.path.isdir(hf_local_path):
+                        tokenizer = AutoTokenizer.from_pretrained(hf_local_path, local_files_only=True, use_fast=False)
+                        try:
+                            model_for_log = AutoModelForCausalLM.from_pretrained(
+                                hf_local_path,
+                                local_files_only=True,
+                                load_in_4bit=True,
+                                device_map="auto",
+                                low_cpu_mem_usage=True,
+                            )
+                            loaded_in_4bit = True
+                        except Exception as e4:
+                            print(f"4-bit local load failed: {e4}", flush=True)
+                    else:
+                        tokenizer = AutoTokenizer.from_pretrained(hf_model_name, cache_dir=MODEL_CACHE_DIR, use_fast=False)
+                        try:
+                            model_for_log = AutoModelForCausalLM.from_pretrained(
+                                hf_model_name,
+                                cache_dir=MODEL_CACHE_DIR,
+                                load_in_4bit=True,
+                                device_map="auto",
+                                low_cpu_mem_usage=True,
+                            )
+                            loaded_in_4bit = True
+                        except Exception as e4:
+                            print(f"4-bit hub load failed: {e4}", flush=True)
+                except Exception as e:
+                    print(f"4-bit attempt error: {e}", flush=True)
+
+                if not loaded_in_4bit:
+                    # Fall back to float16 load (or local files) — this may dequantize and use more memory.
+                    if os.path.isdir(hf_local_path):
+                        # Local folder
+                        tokenizer = AutoTokenizer.from_pretrained(hf_local_path, local_files_only=True, use_fast=False)
+                        model_for_log = AutoModelForCausalLM.from_pretrained(
+                            hf_local_path,
+                            local_files_only=True,
+                            dtype=torch.float16,
+                            device_map="auto",
+                            low_cpu_mem_usage=True,
+                        )
+                    else:
+                        # Use MODEL_CACHE_DIR as cache_dir so downloads are persisted across requests/containers.
+                        tokenizer = AutoTokenizer.from_pretrained(hf_model_name, cache_dir=MODEL_CACHE_DIR, use_fast=False)
+                        model_for_log = AutoModelForCausalLM.from_pretrained(
+                            hf_model_name,
+                            cache_dir=MODEL_CACHE_DIR,
+                            dtype=torch.float16,
+                            device_map="auto",
+                            low_cpu_mem_usage=True,
+                        )
+                model_for_log.eval()
+                device_log = next(model_for_log.parameters()).device
+                inputs = tokenizer(text, return_tensors="pt")
+                input_ids = inputs["input_ids"].to(device_log)
+                try:
+                    with torch.no_grad():
+                        outputs_log = model_for_log(input_ids)
+                except Exception as e_forward:
+                    print(f"Local forward failed ({e_forward}), retrying with bfloat16...", flush=True)
+                    try:
+                        del model_for_log
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    # Retry loading with bfloat16 which may match dequantized weights
+                    try:
+                        # Prefer local cached folder if present
+                        if os.path.isdir(hf_local_path):
+                            model_for_log = AutoModelForCausalLM.from_pretrained(
+                                hf_local_path,
+                                local_files_only=True,
+                                dtype=torch.bfloat16,
+                                device_map="auto",
+                                low_cpu_mem_usage=True,
+                            )
+                        else:
+                            model_for_log = AutoModelForCausalLM.from_pretrained(
+                                hf_model_name,
+                                cache_dir=MODEL_CACHE_DIR,
+                                dtype=torch.bfloat16,
+                                device_map="auto",
+                                low_cpu_mem_usage=True,
+                            )
+                        model_for_log.eval()
+                        device_log = next(model_for_log.parameters()).device
+                        input_ids = input_ids.to(device_log)
+                        with torch.no_grad():
+                            outputs_log = model_for_log(input_ids)
+                    except Exception as e_retry:
+                        # Re-raise original forward error if retry also fails
+                        print(f"Retry with bfloat16 failed: {e_retry}", flush=True)
+                        raise
+                    logits = outputs_log.logits  # [1, seq_len, vocab]
+                    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+                    if input_ids.size(1) > 1:
+                        shift_ids = input_ids[:, 1:].contiguous()
+                        shift_log_probs = log_probs[:, :-1, :].contiguous()
+                        token_log_probs = shift_log_probs.gather(2, shift_ids.unsqueeze(-1)).squeeze(-1)  # [1, seq-1]
+                        token_log_probs_list = token_log_probs.squeeze(0).cpu().tolist()
+                        nll = -sum(token_log_probs_list)
+                        tokens = len(token_log_probs_list)
+                        ppl = math.exp(nll / tokens) if tokens > 0 else None
+                    else:
+                        token_log_probs_list = []
+                        nll = 0.0
+                        tokens = 0
+                        ppl = None
+                # best-effort free GPU memory
+                try:
+                    del model_for_log
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                return {
+                    "model": model_name,
+                    "created": int(time.time()),
+                    "logprobs": token_log_probs_list,
+                    "nll": nll,
+                    "tokens": tokens,
+                    "perplexity": ppl,
+                    "done": True,
+                }
+            except Exception as e:
+                print(f"Error computing logprobs locally: {e}", flush=True)
+                # fall through to the normal Ollama call as fallback
+
         # Call Ollama API for inference
         print(f"Sending request to Ollama with model: {model_name}")
         try:
